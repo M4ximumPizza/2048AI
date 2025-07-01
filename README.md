@@ -20,7 +20,7 @@ This project is not a basic move-bot. It uses cutting-edge AI search techniques 
   - Penalties for tile instability
 - **Zobrist hashing** for transposition table caching
 - Parallel Expectimax evaluations using `ExecutorService`
-- ⏱Time-limited AI moves (default: 1500 ms)
+- ⏱Time-limited AI moves (default: 5000 ms)
 - Clean AWT rendering of the 2048 game board
 
 --- 
@@ -43,7 +43,7 @@ Expectimax is run using **iterative deepening**:
 
 #### Time Management
 
-Each move is constrained to **1500ms** (`TIME_LIMIT_MS`). If time runs out during Expectimax:
+Each move is constrained to **5000ms** (`TIME_LIMIT_MS`). If time runs out during Expectimax:
 - The current best move is selected.
 - A fallback to evaluation is used to prevent stalling.
 

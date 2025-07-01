@@ -24,6 +24,7 @@ public class AI2048 extends Frame implements Runnable {
     final double MAX_WEIGHT = 10.0;
     final double SMOOTH_WEIGHT = 2.0;
     private static final long[][] ZOBRIST_TABLE = new long[SIZE * SIZE][12];
+    private boolean gameWon;
 
     // Cache for transposition table
     private Map<Long, Double> transpositionTable = new HashMap<>();
@@ -32,7 +33,7 @@ public class AI2048 extends Frame implements Runnable {
     private long startTime;
 
     // Time limit per AI move in milliseconds
-    private static final long TIME_LIMIT_MS = 1500;
+    private static final long TIME_LIMIT_MS = 5000;
 
     public AI2048() {
         super("2048 AI");
@@ -88,6 +89,7 @@ public class AI2048 extends Frame implements Runnable {
             Arrays.fill(board[i], 0);
         addRandomTile();
         addRandomTile();
+        gameWon = false;
         gameOver = false;
         repaint();
     }
@@ -689,12 +691,17 @@ public class AI2048 extends Frame implements Runnable {
 
         if (didMove) {
             addRandomTile();
+
+            if (maxTile(board) >= 2048) {
+                gameWon = true;
+                return; // stop AI after winning
+            }
+
             repaint();
             if (!canMove()) {
                 gameOver = true;
             }
         } else {
-            // No move made, game over
             gameOver = true;
         }
     }
@@ -729,14 +736,15 @@ public class AI2048 extends Frame implements Runnable {
             }
         }
 
-        if (gameOver) {
+        if (gameOver || gameWon) {
             g.setColor(new Color(255, 255, 255, 180));
             g.fillRect(0, 0, getWidth(), getHeight());
-            g.setColor(Color.RED);
+            g.setColor(gameWon ? Color.GREEN : Color.RED);
             g.setFont(new Font("Arial", Font.BOLD, 48));
-            g.drawString("Game Over!", 100, getHeight() / 2);
+            g.drawString(gameWon ? "You Win!" : "Game Over!", 100, getHeight() / 2);
         }
     }
+
 
     private void drawTile(Graphics g, int value, int x, int y, int w, int h) {
         Color bg;
@@ -768,10 +776,6 @@ public class AI2048 extends Frame implements Runnable {
             int sw = fm.stringWidth(s);
             int sh = fm.getAscent();
             g.drawString(s, x + (w - sw) / 2, y + (h + sh) / 2 - 5);
-        }
-        if (value == 2048) {
-            g.setColor(Color.YELLOW);
-            g.drawString("You Win!", x + 10, y + h - 10);
         }
     }
 
