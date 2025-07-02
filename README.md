@@ -1,220 +1,77 @@
-# 🧠 2048 AI – Advanced Autonomous 2048 Solver in Java
+# 🧠 AI2048 – Advanced Autonomous 2048 Solver in Java
 
-Welcome to my 2048 AI, an advanced autonomous Java-based AI agent that plays the popular game [2048](https://play2048.co/) with remarkable intelligence.
-
-This project is not a basic move-bot. It uses cutting-edge AI search techniques and board evaluation strategies inspired by real-world decision theory and game AI. The AI can reach the **2048 tile** and sometimes achieve much higher (4096, 8192), depending on randomness and depth constraints.
+An intelligent, autonomous Java AI that plays the popular puzzle game [2048](https://play2048.co/) using advanced AI techniques. The AI can reach the **2048 tile** reliably and sometimes even higher tiles depending on randomness and search depth.
 
 ---
 
 ## 📌 Features
 
-- Fully autonomous gameplay with AWT GUI
-- Smart **iterative deepening Expectimax** search algorithm
-- Multi-factor **heuristic evaluation function**:
-  - Empty tiles
-  - Smoothness
-  - Monotonicity
-  - Merge potential
-  - Gradient positioning
-  - Corner lock (bottom-left bias)
-  - Penalties for tile instability
-- **Zobrist hashing** for transposition table caching
-- Parallel Expectimax evaluations using `ExecutorService`
-- ⏱Time-limited AI moves (default: 5000 ms)
-- Clean AWT rendering of the 2048 game board
+* **Fully autonomous gameplay** with simple AWT GUI
+* Implements **Expectimax search** with **iterative deepening** and **time limits**
+* **Heuristic evaluation function** combining:
 
---- 
-## 🔧 How the AI Works
-
-### 🧠 1. Expectimax Algorithm
-
-The core of the AI is the **Expectimax search**, a variation of Minimax used when outcomes are probabilistic:
-
-- **Player Nodes** (AI's turn): Choose the move with the highest expected value.
-- **Chance Nodes** (random tile spawn): Average out the outcome of all possible spawns weighted by their probabilities (0.9 for 2, 0.1 for 4).
-
-#### Iterative Deepening
-
-Expectimax is run using **iterative deepening**:
-- Searches start at depth 1 and increase up to 9 depending on board state and time.
-- This allows:
-  - Best-move discovery before timeout
-  - Flexible depth based on tile sparsity
-
-#### Time Management
-
-Each move is constrained to **5000ms** (`TIME_LIMIT_MS`). If time runs out during Expectimax:
-- The current best move is selected.
-- A fallback to evaluation is used to prevent stalling.
+  * Empty tile count
+  * Smoothness of tile values
+  * Monotonicity of rows and columns
+  * Corner bias to keep max tile locked in a corner
+  * Logarithmic scaling for max tile values
+* **Zobrist hashing** for transposition table caching to avoid redundant evaluations
+* Branching pruning by **sampling empty tiles** during chance nodes
+* **AI thread cleanly stops on win or game over**, preventing freezes
+* Double buffering with offscreen graphics for flicker-free rendering
+* Clear “You Win!” and “Game Over!” messages on the GUI
 
 ---
 
-### 📏 2. Heuristic Evaluation Function
+## 🔧 How It Works
 
-When Expectimax reaches its depth limit or hits a timeout, a **custom evaluation function** scores the board.
+### 1. Expectimax Algorithm with Iterative Deepening
 
-This function combines multiple weighted features:
+The core AI uses **Expectimax search**, which handles the probabilistic nature of tile spawns (new 2 or 4 tiles).
 
-#### 📐 2.1. Empty Cells
+* **Player nodes** represent the AI’s move choices.
+* **Chance nodes** model random tile spawns with weighted probabilities (90% for 2, 10% for 4).
 
-```java
-EMPTY_WEIGHT * countEmptyCells(board)
-````
+**Iterative deepening** searches from depth 1 up to a max depth (adjusted dynamically based on empties), ensuring:
 
-* Encourages keeping more options open.
-* AI avoids early fill-up.
+* Early move decisions within the time limit
+* Deeper searches on simpler boards
 
-#### ➿ 2.2. Smoothness
+### 2. Heuristic Board Evaluation
 
-```java
-SMOOTH_WEIGHT * smoothness(board, logBoard)
-```
+When the search reaches its depth limit or times out, the board is scored by a heuristic that includes:
 
-* Penalizes adjacent tiles with sharp differences.
-* Rewards groupings of similar-valued tiles for merging potential.
+* **Empty tiles:** More empty cells means more mobility (weighted positively).
+* **Smoothness:** Penalizes large value differences between adjacent tiles.
+* **Monotonicity:** Rewards rows and columns that are consistently increasing or decreasing.
+* **Max tile position:** Bonus if the max tile is in any corner (locking strategy).
+* **Logarithmic max tile value:** Encourages growing bigger tiles with diminishing returns.
 
-#### 📈 2.3. Monotonicity
+### 3. Zobrist Hashing & Transposition Table
 
-```java
-MONO_WEIGHT * monotonicity(board, logBoard)
-```
+Each board state is hashed using a precomputed Zobrist table for fast lookups in a transposition table, speeding up the search by caching evaluated states.
 
-* Encourages tiles to increase/decrease consistently along rows or columns.
-* Helps create merge-friendly lines.
+### 4. Time Management & Sampling
 
-#### 📊 2.4. Merge Potential
+* Each AI move has a **5-second time limit**.
+* During chance nodes, only up to **3 empty tiles are sampled** to reduce branching and improve speed.
 
-```java
-MERGE_POTENTIAL_WEIGHT * mergePotential(board)
-```
+### 5. Rendering & UI
 
-* Rewards boards where tiles can soon be merged.
-* Helps avoid wasteful spreads.
-
-#### 📌 2.5. Corner Lock Bonus
-
-```java
-cornerLockBonus(board)
-```
-
-* Adds a **huge bonus** if the **max tile is in the bottom-left** and tiles around it decrease as expected.
-* Prevents losing the high tile to the center.
-
-#### 💠 2.6. Gradient Score
-
-```java
-GRADIENT_WEIGHT * gradientScore(board)
-```
-
-The board is scored with a **gradient matrix**:
-
-```
-[15, 14, 13, 12]
-[ 8,  9, 10, 11]
-[ 7,  6,  5,  4]
-[ 0,  1,  2,  3]
-```
-
-* Encourages placing high tiles in the bottom-left corner.
-* This biases tile movement to keep "heavy" tiles locked.
-
-#### 🚫 2.7. Instability Penalty
-
-```java
--instabilityPenalty(board)
-```
-
-* Penalizes tiles that are positioned higher than their neighbors.
-* Prevents forming a fragile structure.
-
-#### 📉 2.8. Big Tile Distance Penalty
-
-```java
--bigTileDistancePenalty(board)
-```
-
-* Measures Manhattan distance of large tiles (≥64) from the bottom-left corner.
-* Encourages clustering.
-
-#### 🧮 2.9. Max Tile Log Scaling
-
-```java
-MAX_WEIGHT * log2(maxTile)
-```
-
-* Rewards high tiles.
-* Uses logarithmic scaling for diminishing returns.
-
-#### 📏 2.10. Directional Monotonicity
-
-```java
-directionalMonotonicity(board)
-```
-
-* Evaluates monotonic trends left-right, right-left, top-bottom, bottom-top.
-* Selects the strongest.
+* Tiles are colored based on value, drawn with anti-flicker double buffering.
+* Displays "You Win!" when 2048 or above is reached, and stops AI moves.
+* Displays "Game Over!" if no moves remain.
 
 ---
 
-### 🧪 3. Zobrist Hashing + Transposition Table
+## 🧪 Running the AI
 
-To **avoid redundant board evaluations**, we:
+### Requirements
 
-* Use a precomputed `ZOBRIST_TABLE[16][12]` for 4x4 tiles up to 4096.
-* XOR encode each tile based on its position and value.
-* Use this as a **cache key** in `transpositionTable`.
+* Java 8 or later
+* No external dependencies
 
-Result:
-
-* Speeds up Expectimax massively.
-* Enables reuse of evaluation results for the same board encountered through different move sequences.
-
----
-
-### 🧵 4. Parallel Evaluation
-
-During the **AI’s move selection**, we:
-
-* Launch a thread pool using `ExecutorService`
-* Evaluate child boards in parallel
-* Combine their results into the best-move decision
-
----
-
-## 🧪 AI Design Insights
-
-The AI is heavily optimized for:
-
-* **Control**: Keeping tiles locked in one corner
-* **Safety**: Maximizing future flexibility (empty tiles)
-* **Power**: Growing the largest tile as efficiently as possible
-* **Stability**: Avoiding scattered large tiles
-
-It mimics the way a strong human player strategizes:
-
-* One corner to store the big tile
-* Push smaller tiles toward it
-* Avoid random scattered merges
-
----
-
-## 🖼️ GUI
-
-* Drawn using Java AWT
-* Each tile has a distinct background color
-* Displays "Game Over!" if no moves remain
-* Displays "You Win!" when 2048 is reached
-
----
-
-## 📦 Getting Started
-
-### 🔧 Requirements
-
-* Java 8+
-* Any IDE or terminal
-
-### 🧪 Run the Game
+### Build and Run
 
 ```bash
 javac mi/m4x/fusion/AI2048.java
@@ -232,9 +89,14 @@ mi/
            └── AI2048.java
 ```
 
-
 ---
 
 ## 🤝 Contributing
 
-Pull requests are welcome. For major changes, open an issue first to discuss what you would like to change or improve.
+Feel free to fork and improve the AI! Pull requests are welcome, especially for:
+
+* Improving heuristics
+* Optimizing search performance
+* Adding new GUI features
+
+---

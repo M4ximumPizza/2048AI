@@ -4,10 +4,6 @@ import java.awt.*;
 import java.awt.event.*;
 import java.util.*;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 public class AI2048 extends Frame implements Runnable {
     private static final int SIZE = 4;
@@ -16,15 +12,16 @@ public class AI2048 extends Frame implements Runnable {
     private boolean moved;
     private boolean gameOver;
     private Thread aiThread;
-    final double EMPTY_WEIGHT = 200.0;
-    final double MONO_WEIGHT = 150.0;
-    final double MERGE_POTENTIAL_WEIGHT = 100.0;
-    final double CORNER_WEIGHT = 10000.0;
-    final double GRADIENT_WEIGHT = 2.5;
-    final double MAX_WEIGHT = 10.0;
-    final double SMOOTH_WEIGHT = 2.0;
-    private static final long[][] ZOBRIST_TABLE = new long[SIZE * SIZE][12];
+    double EMPTY_WEIGHT = 300.0;
+    double MONO_WEIGHT = 100.0;
+    double SMOOTH_WEIGHT = 3.0;
+    double CORNER_WEIGHT = 2000.0;
+    double MAX_WEIGHT = 2.0;
+    private static final int MAX_LOG_TILE = 15;
+    private static final long[][] ZOBRIST_TABLE = new long[SIZE * SIZE][MAX_LOG_TILE];
     private boolean gameWon;
+    private Image offscreenImage;
+    private Graphics offscreenGraphics;
 
     // Cache for transposition table
     private Map<Long, Double> transpositionTable = new HashMap<>();
@@ -52,37 +49,6 @@ public class AI2048 extends Frame implements Runnable {
         aiThread = new Thread(this);
         aiThread.start();
     }
-
-    private double directionalMonotonicity(int[][] b) {
-        double[] totals = new double[4]; // 0: left->right, 1: right->left, 2: top->bottom, 3: bottom->top
-
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE - 1; j++) {
-                int current = log2(b[i][j]);
-                int next = log2(b[i][j + 1]);
-                if (current > next) totals[0] += next - current; // left->right decreasing
-                else totals[1] += current - next;                 // right->left decreasing
-            }
-        }
-
-        for (int j = 0; j < SIZE; j++) {
-            for (int i = 0; i < SIZE - 1; i++) {
-                int current = log2(b[i][j]);
-                int next = log2(b[i + 1][j]);
-                if (current > next) totals[2] += next - current; // top->bottom decreasing
-                else totals[3] += current - next;                 // bottom->top decreasing
-            }
-        }
-
-        // The maximum of these totals is the dominant monotonic direction score
-        double maxTotal = totals[0];
-        for (int k = 1; k < 4; k++) {
-            if (totals[k] > maxTotal) maxTotal = totals[k];
-        }
-
-        return maxTotal;
-    }
-
 
     public void resetBoard() {
         for (int i = 0; i < SIZE; i++)
@@ -363,92 +329,15 @@ public class AI2048 extends Frame implements Runnable {
     }
 
     private double evaluateBoard(int[][] b) {
-        boolean lateGame = maxTile(b) >= 2048;
-        double monoWeight = lateGame ? MONO_WEIGHT * 2.5 : MONO_WEIGHT;
-        double gradientWeight = lateGame ? GRADIENT_WEIGHT * 5.0 : GRADIENT_WEIGHT;
-        double cornerBonus = maxTileInCorner(b) ? CORNER_WEIGHT : -CORNER_WEIGHT;
-
         int[][] logBoard = computeLogBoard(b);
         int max = maxTile(b);
         double logMax = max == 0 ? 0 : Math.log(max) / Math.log(2);
 
         return EMPTY_WEIGHT * countEmptyCells(b)
                 + SMOOTH_WEIGHT * smoothness(b, logBoard)
-                + monoWeight * monotonicity(b, logBoard)
+                + MONO_WEIGHT * monotonicity(b, logBoard)
                 + MAX_WEIGHT * logMax
-                + cornerLockBonus(b)
-                + gradientWeight * gradientScore(b)
-                + MERGE_POTENTIAL_WEIGHT * mergePotential(b)
-                + (isMaxTileStable(b) ? 0 : -10000)
-                - instabilityPenalty(b)
-                - bigTileDistancePenalty(b)
-                + 50.0 * directionalMonotonicity(b) + cornerBonus;
-    }
-
-
-    private double bigTileDistancePenalty(int[][] b) {
-        double penalty = 0.0;
-        int max = maxTile(b);
-        int threshold = 64; // only penalize tiles >= 64 (adjust if you want)
-
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
-                int val = b[i][j];
-                if (val >= threshold) {
-                    int dist = Math.abs(3 - i) + Math.abs(0 - j); // Manhattan distance from bottom-left (3,0)
-                    penalty += dist * val * 10; // weight it by tile value and distance
-                }
-            }
-        }
-        return penalty;
-    }
-
-
-    private double instabilityPenalty(int[][] b) {
-        int max = maxTile(b);
-        int penalty = 0;
-
-        for (int i = 0; i < SIZE - 1; i++) {
-            for (int j = 0; j < SIZE; j++) {
-                if (b[i][j] != 0 && b[i + 1][j] != 0 && b[i][j] < b[i + 1][j])
-                    penalty += Math.abs(b[i][j] - b[i + 1][j]);
-            }
-        }
-
-        for (int j = 0; j < SIZE - 1; j++) {
-            for (int i = 0; i < SIZE; i++) {
-                if (b[i][j] != 0 && b[i][j + 1] != 0 && b[i][j] < b[i][j + 1])
-                    penalty += Math.abs(b[i][j] - b[i][j + 1]);
-            }
-        }
-
-        return penalty;
-    }
-
-    private static final int[][] GRADIENT = {
-            { 15, 14, 13, 12 },
-            {  8,  9, 10, 11 },
-            {  7,  6,  5,  4 },
-            {  0,  1,  2,  3 }
-    };
-
-    private int mergePotential(int[][] b) {
-        int potential = 0;
-        for (int i = 0; i < SIZE; i++)
-            for (int j = 0; j < SIZE; j++) {
-                if (b[i][j] == 0) continue;
-                if (i + 1 < SIZE && b[i][j] == b[i + 1][j]) potential += log2(b[i][j]) * 2;
-                if (j + 1 < SIZE && b[i][j] == b[i][j + 1]) potential += log2(b[i][j]) * 2;
-            }
-        return potential;
-    }
-
-    private double gradientScore(int[][] b) {
-        double score = 0;
-        for (int i = 0; i < SIZE; i++)
-            for (int j = 0; j < SIZE; j++)
-                score += b[i][j] * GRADIENT[i][j];
-        return score;
+                + CORNER_WEIGHT * (maxTileInCorner(b) ? 1 : -1);
     }
 
     private boolean canMove(int[][] b) {
@@ -492,28 +381,21 @@ public class AI2048 extends Frame implements Runnable {
             double maxScore = Double.NEGATIVE_INFINITY;
 
             List<int[]> orderedMoves = generateOrderedMoves(boardState);
-            ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-            List<Future<Double>> futures = new ArrayList<>();
-
             for (int[] movePair : orderedMoves) {
                 int dir = movePair[0];
                 int[][] newBoard = copyBoard(boardState);
                 if (!moveDirection(newBoard, dir)) continue;
 
-                futures.add(executor.submit(() -> expectimax(newBoard, depth - 1, false)));
-            }
-
-            executor.shutdown();
-
-            for (int i = 0; i < futures.size(); i++) {
-                try {
-                    double score = futures.get(i).get();
-                    if (score > maxScore) {
-                        maxScore = score;
-                    }
-                } catch (InterruptedException | ExecutionException e) {
-                    e.printStackTrace();
+                double score = expectimax(newBoard, depth - 1, false);
+                if (score > maxScore) {
+                    maxScore = score;
                 }
+
+                // Optional early pruning: if very strong score found, stop early
+                if (score > 100000) break;
+
+                // Timeout check (in case inner call ran long)
+                if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) break;
             }
 
             result = maxScore == Double.NEGATIVE_INFINITY ? -1000000 : maxScore;
@@ -535,7 +417,10 @@ public class AI2048 extends Frame implements Runnable {
                 totalWeight += w;
             }
 
-            for (Point pnt : empties) {
+            // *** Sample empties to limit branching ***
+            List<Point> sampledEmpties = sampleEmptyCells(empties, 3);  // limit to 3 samples
+
+            for (Point pnt : sampledEmpties) {
                 double w = weights.get(pnt) / totalWeight;
 
                 int[][] boardWith2 = copyBoard(boardState);
@@ -553,6 +438,13 @@ public class AI2048 extends Frame implements Runnable {
         return result;
     }
 
+    private List<Point> sampleEmptyCells(List<Point> empties, int maxSamples) {
+        if (empties.size() <= maxSamples) return empties;
+        List<Point> copy = new ArrayList<>(empties);
+        Collections.shuffle(copy, random);
+        return copy.subList(0, maxSamples);
+    }
+
     private Point findMaxTilePosition(int[][] b) {
         int max = 0;
         Point pos = new Point(0, 0);
@@ -564,30 +456,6 @@ public class AI2048 extends Frame implements Runnable {
                 }
         return pos;
     }
-
-    private double cornerLockBonus(int[][] b) {
-        int max = maxTile(b);
-        double bonus = 0.0;
-
-        // Penalize if max tile NOT at bottom-left corner
-        if (b[3][0] != max) {
-            return -CORNER_WEIGHT;  // heavy penalty
-        }
-
-        // Bonus for tiles decreasing outward from bottom-left
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
-                int val = b[3 - i][j];  // bottom row up, left to right
-                if (val == 0) continue;
-                int expected = max >> (i + j); // expecting powers of two decreasing away from corner
-                if (val <= expected) bonus += val;
-                else bonus -= val; // penalize unexpected big tiles far from corner
-            }
-        }
-
-        return bonus;
-    }
-
 
     private boolean isCorner(Point p) {
         return (p.x == 0 && p.y == 0) ||
@@ -706,45 +574,42 @@ public class AI2048 extends Frame implements Runnable {
         }
     }
 
-    private boolean isMaxTileStable(int[][] b) {
-        int max = maxTile(b);
-        // Enforce max tile at bottom-left corner (3,0)
-        if (b[3][0] != max) return false;
-
-        // Optionally: check neighbors to ensure "descending" order around max tile
-        // This is a simple check you can expand on if you want
-
-        return true;
-    }
-
     @Override
     public void paint(Graphics g) {
-        g.setColor(new Color(0xbbada0));
-        g.fillRect(0, 0, getWidth(), getHeight());
+        if (offscreenImage == null) {
+            offscreenImage = createImage(getWidth(), getHeight());
+            offscreenGraphics = offscreenImage.getGraphics();
+        }
+
+        // Clear offscreen
+        offscreenGraphics.setColor(new Color(0xbbada0));
+        offscreenGraphics.fillRect(0, 0, getWidth(), getHeight());
 
         int tileSize = 80;
         int padding = 15;
         Font font = new Font("Arial", Font.BOLD, 36);
-        g.setFont(font);
+        offscreenGraphics.setFont(font);
 
         for (int i = 0; i < SIZE; i++) {
             for (int j = 0; j < SIZE; j++) {
                 int value = board[i][j];
                 int x = padding + j * (tileSize + padding);
                 int y = padding + i * (tileSize + padding) + 30;
-                drawTile(g, value, x, y, tileSize, tileSize);
+                drawTile(offscreenGraphics, value, x, y, tileSize, tileSize);
             }
         }
 
         if (gameOver || gameWon) {
-            g.setColor(new Color(255, 255, 255, 180));
-            g.fillRect(0, 0, getWidth(), getHeight());
-            g.setColor(gameWon ? Color.GREEN : Color.RED);
-            g.setFont(new Font("Arial", Font.BOLD, 48));
-            g.drawString(gameWon ? "You Win!" : "Game Over!", 100, getHeight() / 2);
+            offscreenGraphics.setColor(new Color(255, 255, 255, 180));
+            offscreenGraphics.fillRect(0, 0, getWidth(), getHeight());
+            offscreenGraphics.setColor(gameWon ? Color.GREEN : Color.RED);
+            offscreenGraphics.setFont(new Font("Arial", Font.BOLD, 48));
+            offscreenGraphics.drawString(gameWon ? "You Win!" : "Game Over!", 100, getHeight() / 2);
         }
-    }
 
+        // Draw offscreen buffer to screen in one operation
+        g.drawImage(offscreenImage, 0, 0, this);
+    }
 
     private void drawTile(Graphics g, int value, int x, int y, int w, int h) {
         Color bg;
@@ -781,7 +646,7 @@ public class AI2048 extends Frame implements Runnable {
 
     @Override
     public void run() {
-        while (!gameOver) {
+        while (!gameOver && !gameWon) {
             performAIMove();
             try {
                 Thread.sleep(10);
@@ -792,17 +657,25 @@ public class AI2048 extends Frame implements Runnable {
         repaint();
     }
 
+
+    @Override
+    public void update(Graphics g) {
+        // Override update to avoid clearing screen before paint,
+        // which causes flicker
+        paint(g);
+    }
+
     static {
-        Random rand = new Random(12345); // consistent seeds
+        Random rand = new Random();
         for (int i = 0; i < SIZE * SIZE; i++) {
-            for (int j = 0; j < 12; j++) {
+            for (int j = 0; j < MAX_LOG_TILE; j++) {
                 ZOBRIST_TABLE[i][j] = rand.nextLong();
             }
         }
     }
 
+
     public static void main(String[] args) {
         new AI2048();
     }
 }
-
