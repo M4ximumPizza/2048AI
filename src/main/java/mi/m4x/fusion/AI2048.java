@@ -7,30 +7,37 @@ import java.util.List;
 
 public class AI2048 extends Frame implements Runnable {
     private static final int SIZE = 4;
-    private int[][] board = new int[SIZE][SIZE];
-    private Random random = new Random();
-    private boolean moved;
-    private boolean gameOver;
-    private Thread aiThread;
-    double EMPTY_WEIGHT = 300.0;
-    double MONO_WEIGHT = 100.0;
-    double SMOOTH_WEIGHT = 3.0;
-    double CORNER_WEIGHT = 2000.0;
-    double MAX_WEIGHT = 2.0;
+    private static final int TILE_SIZE = 80;
+    private static final int PADDING = 15;
     private static final int MAX_LOG_TILE = 15;
     private static final long[][] ZOBRIST_TABLE = new long[SIZE * SIZE][MAX_LOG_TILE];
+    private static final long TIME_LIMIT_MS = 5000;
+
+    private final int[][] board = new int[SIZE][SIZE];
+    private final Random random = new Random();
+    private final Map<Long, Double> transpositionTable = new HashMap<>();
+
+    private boolean moved;
+    private boolean gameOver;
     private boolean gameWon;
+    private Thread aiThread;
     private Image offscreenImage;
     private Graphics offscreenGraphics;
-
-    // Cache for transposition table
-    private Map<Long, Double> transpositionTable = new HashMap<>();
-
-    // Expectimax with caching and iterative deepening timeout support
     private long startTime;
 
-    // Time limit per AI move in milliseconds
-    private static final long TIME_LIMIT_MS = 5000;
+    // Heuristic weights
+    private static final double EMPTY_WEIGHT = 300.0;
+    private static final double MONO_WEIGHT = 100.0;
+    private static final double SMOOTH_WEIGHT = 3.0;
+    private static final double CORNER_WEIGHT = 2000.0;
+    private static final double MAX_WEIGHT = 2.0;
+
+    static {
+        Random rand = new Random();
+        for (int i = 0; i < SIZE * SIZE; i++)
+            for (int j = 0; j < MAX_LOG_TILE; j++)
+                ZOBRIST_TABLE[i][j] = rand.nextLong();
+    }
 
     public AI2048() {
         super("2048 AI");
@@ -51,8 +58,7 @@ public class AI2048 extends Frame implements Runnable {
     }
 
     public void resetBoard() {
-        for (int i = 0; i < SIZE; i++)
-            Arrays.fill(board[i], 0);
+        for (int[] row : board) Arrays.fill(row, 0);
         addRandomTile();
         addRandomTile();
         gameWon = false;
@@ -72,20 +78,6 @@ public class AI2048 extends Frame implements Runnable {
         }
     }
 
-    private List<int[]> generateOrderedMoves(int[][] boardState) {
-        List<int[]> moves = new ArrayList<>();
-        for (int dir = 0; dir < 4; dir++) {
-            int[][] newBoard = copyBoard(boardState);
-            if (moveDirection(newBoard, dir)) {
-                double score = evaluateBoard(newBoard);
-                moves.add(new int[]{dir, (int)(score * 1000)}); // scale score for sorting
-            }
-        }
-        moves.sort((a, b) -> Integer.compare(b[1], a[1])); // descending order
-        return moves;
-    }
-
-
     private boolean canMove() {
         for (int i = 0; i < SIZE; i++)
             for (int j = 0; j < SIZE; j++) {
@@ -96,120 +88,34 @@ public class AI2048 extends Frame implements Runnable {
         return false;
     }
 
-    private boolean moveLeft() {
-        moved = false;
-        for (int i = 0; i < SIZE; i++) {
-            int[] row = board[i];
-            int[] compressed = new int[SIZE];
-            int index = 0;
-
-            for (int j = 0; j < SIZE; j++) {
-                if (row[j] != 0) {
-                    compressed[index++] = row[j];
-                }
-            }
-
-            for (int j = 0; j < index - 1; j++) {
-                if (compressed[j] == compressed[j + 1] && compressed[j] != 0) {
-                    compressed[j] *= 2;
-                    compressed[j + 1] = 0;
-                    j++;
-                }
-            }
-
-            int[] newRow = new int[SIZE];
-            int newIndex = 0;
-            for (int j = 0; j < SIZE; j++) {
-                if (compressed[j] != 0) {
-                    newRow[newIndex++] = compressed[j];
-                }
-            }
-
-            for (int j = 0; j < SIZE; j++) {
-                if (row[j] != newRow[j]) {
-                    moved = true;
-                    row[j] = newRow[j];
-                }
-            }
-        }
-        return moved;
-    }
-
-    private void rotateClockwise() {
-        int[][] newBoard = new int[SIZE][SIZE];
-        for (int i = 0; i < SIZE; i++)
-            for (int j = 0; j < SIZE; j++)
-                newBoard[j][SIZE - 1 - i] = board[i][j];
-        board = newBoard;
-    }
-
-    private void rotateCounterClockwise() {
-        int[][] newBoard = new int[SIZE][SIZE];
-        for (int i = 0; i < SIZE; i++)
-            for (int j = 0; j < SIZE; j++)
-                newBoard[SIZE - 1 - j][i] = board[i][j];
-        board = newBoard;
-    }
-
-    private boolean moveRight() {
-        rotateClockwise();
-        rotateClockwise();
-        boolean res = moveLeft();
-        rotateClockwise();
-        rotateClockwise();
-        return res;
-    }
-
-    private boolean moveUp() {
-        rotateCounterClockwise();
-        boolean res = moveLeft();
-        rotateClockwise();
-        return res;
-    }
-
-    private boolean moveDown() {
-        rotateClockwise();
-        boolean res = moveLeft();
-        rotateCounterClockwise();
-        return res;
-    }
-
-    private boolean moveDirection(int[][] b, int dir) {
+    // Unified move logic for both main and arbitrary boards
+    private boolean move(int[][] b, int dir) {
         switch (dir) {
             case 0: return moveUp(b);
             case 1: return moveDown(b);
             case 2: return moveLeft(b);
             case 3: return moveRight(b);
+            default: return false;
         }
-        return false;
     }
 
     private boolean moveLeft(int[][] b) {
         boolean movedLocal = false;
-        for (int i = 0; i < SIZE; i++) {
-            int[] row = b[i];
-            int[] compressed = new int[SIZE];
-            int index = 0;
-
-            for (int j = 0; j < SIZE; j++) {
-                if (row[j] != 0) compressed[index++] = row[j];
-            }
-            for (int j = 0; j < index - 1; j++) {
-                if (compressed[j] == compressed[j + 1] && compressed[j] != 0) {
-                    compressed[j] *= 2;
-                    compressed[j + 1] = 0;
-                    j++;
+        for (int[] row : b) {
+            int[] compressed = Arrays.stream(row).filter(v -> v != 0).toArray();
+            int[] merged = new int[SIZE];
+            int idx = 0;
+            for (int j = 0; j < compressed.length; j++) {
+                if (j < compressed.length - 1 && compressed[j] == compressed[j + 1]) {
+                    merged[idx++] = compressed[j++] * 2;
+                } else {
+                    merged[idx++] = compressed[j];
                 }
             }
-            int[] newRow = new int[SIZE];
-            int newIndex = 0;
             for (int j = 0; j < SIZE; j++) {
-                if (compressed[j] != 0) newRow[newIndex++] = compressed[j];
-            }
-            for (int j = 0; j < SIZE; j++) {
-                if (row[j] != newRow[j]) {
+                if (row[j] != merged[j]) {
                     movedLocal = true;
-                    row[j] = newRow[j];
+                    row[j] = merged[j];
                 }
             }
         }
@@ -291,14 +197,10 @@ public class AI2048 extends Frame implements Runnable {
             for (int j = 0; j < SIZE; j++) {
                 if (b[i][j] == 0) continue;
                 int value = logBoard[i][j];
-                if (j + 1 < SIZE && b[i][j + 1] != 0) {
-                    int neighborValue = logBoard[i][j + 1];
-                    smooth -= Math.abs(value - neighborValue);
-                }
-                if (i + 1 < SIZE && b[i + 1][j] != 0) {
-                    int neighborValue = logBoard[i + 1][j];
-                    smooth -= Math.abs(value - neighborValue);
-                }
+                if (j + 1 < SIZE && b[i][j + 1] != 0)
+                    smooth -= Math.abs(value - logBoard[i][j + 1]);
+                if (i + 1 < SIZE && b[i + 1][j] != 0)
+                    smooth -= Math.abs(value - logBoard[i + 1][j]);
             }
         }
         return smooth;
@@ -306,25 +208,20 @@ public class AI2048 extends Frame implements Runnable {
 
     private double monotonicity(int[][] b, int[][] logBoard) {
         double score = 0.0;
-
         for (int i = SIZE - 1; i >= 0; i--) {
             for (int j = 0; j < SIZE - 1; j++) {
                 int current = logBoard[i][j];
                 int next = logBoard[i][j + 1];
-                if (current >= next) score += next - current;
-                else score -= (next - current);
+                score += (current >= next) ? next - current : -(next - current);
             }
         }
-
         for (int j = 0; j < SIZE; j++) {
             for (int i = SIZE - 1; i > 0; i--) {
                 int current = logBoard[i][j];
                 int next = logBoard[i - 1][j];
-                if (current >= next) score += next - current;
-                else score -= (next - current);
+                score += (current >= next) ? next - current : -(next - current);
             }
         }
-
         return score;
     }
 
@@ -352,53 +249,37 @@ public class AI2048 extends Frame implements Runnable {
 
     private long boardToLong(int[][] b) {
         long h = 0;
-        for (int i = 0; i < SIZE; i++) {
+        for (int i = 0; i < SIZE; i++)
             for (int j = 0; j < SIZE; j++) {
                 int val = b[i][j];
                 if (val == 0) continue;
                 int log = log2(val);
                 h ^= ZOBRIST_TABLE[i * SIZE + j][log];
             }
-        }
         return h;
     }
 
     private double expectimax(int[][] boardState, int depth, boolean playerTurn) {
-        if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) {
-            // Timeout: fallback evaluation
+        if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS)
             return evaluateBoard(boardState);
-        }
         if (depth == 0) return evaluateBoard(boardState);
-        if (!canMove(boardState)) return -1000000;
+        if (!canMove(boardState)) return -1_000_000;
 
         long hash = boardToLong(boardState);
-        if (transpositionTable.containsKey(hash)) {
+        if (transpositionTable.containsKey(hash))
             return transpositionTable.get(hash);
-        }
 
         double result;
         if (playerTurn) {
             double maxScore = Double.NEGATIVE_INFINITY;
-
-            List<int[]> orderedMoves = generateOrderedMoves(boardState);
-            for (int[] movePair : orderedMoves) {
-                int dir = movePair[0];
+            for (int dir : new int[]{2, 1, 3, 0}) { // left, down, right, up
                 int[][] newBoard = copyBoard(boardState);
-                if (!moveDirection(newBoard, dir)) continue;
-
+                if (!move(newBoard, dir)) continue;
                 double score = expectimax(newBoard, depth - 1, false);
-                if (score > maxScore) {
-                    maxScore = score;
-                }
-
-                // Optional early pruning: if very strong score found, stop early
-                if (score > 100000) break;
-
-                // Timeout check (in case inner call ran long)
-                if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) break;
+                if (score > maxScore) maxScore = score;
+                if (score > 100_000 || System.currentTimeMillis() - startTime > TIME_LIMIT_MS) break;
             }
-
-            result = maxScore == Double.NEGATIVE_INFINITY ? -1000000 : maxScore;
+            result = maxScore == Double.NEGATIVE_INFINITY ? -1_000_000 : maxScore;
         } else {
             List<Point> empties = new ArrayList<>();
             for (int i = 0; i < SIZE; i++)
@@ -407,33 +288,27 @@ public class AI2048 extends Frame implements Runnable {
             if (empties.isEmpty()) return evaluateBoard(boardState);
 
             double expectedScore = 0;
-            double prob2 = 0.9;
-            double prob4 = 0.1;
+            double prob2 = 0.9, prob4 = 0.1;
             double totalWeight = 0;
             Map<Point, Double> weights = new HashMap<>();
-            for (Point pnt : empties) {
-                double w = (pnt.x == 0 || pnt.x == 3 || pnt.y == 0 || pnt.y == 3) ? 1.5 : 1.0;
-                weights.put(pnt, w);
+            for (Point p : empties) {
+                double w = (p.x == 0 || p.x == 3 || p.y == 0 || p.y == 3) ? 1.5 : 1.0;
+                weights.put(p, w);
                 totalWeight += w;
             }
-
-            // *** Sample empties to limit branching ***
-            List<Point> sampledEmpties = sampleEmptyCells(empties, 3);  // limit to 3 samples
-
-            for (Point pnt : sampledEmpties) {
-                double w = weights.get(pnt) / totalWeight;
-
+            List<Point> sampledEmpties = sampleEmptyCells(empties, 3);
+            for (Point p : sampledEmpties) {
+                double w = weights.get(p) / totalWeight;
                 int[][] boardWith2 = copyBoard(boardState);
-                boardWith2[pnt.x][pnt.y] = 2;
+                boardWith2[p.x][p.y] = 2;
                 expectedScore += prob2 * w * expectimax(boardWith2, depth - 1, true);
 
                 int[][] boardWith4 = copyBoard(boardState);
-                boardWith4[pnt.x][pnt.y] = 4;
+                boardWith4[p.x][p.y] = 4;
                 expectedScore += prob4 * w * expectimax(boardWith4, depth - 1, true);
             }
             result = expectedScore;
         }
-
         transpositionTable.put(hash, result);
         return result;
     }
@@ -478,19 +353,17 @@ public class AI2048 extends Frame implements Runnable {
             int currentBestDir = -1;
             double currentBestScore = Double.NEGATIVE_INFINITY;
 
-            int[] moveOrder = {2, 1, 3, 0}; // left > down > right > up
-            for (int dir : moveOrder) {
+            for (int dir : new int[]{2, 1, 3, 0}) {
                 int[][] newBoard = copyBoard(board);
-                if (!moveDirection(newBoard, dir)) continue;
+                if (!move(newBoard, dir)) continue;
 
                 Point newMaxPos = findMaxTilePosition(newBoard);
-
                 if (isCorner(maxTilePos) && !isCorner(newMaxPos)) {
                     boolean alternativeExists = false;
                     for (int altDir = 0; altDir < 4; altDir++) {
                         if (altDir == dir) continue;
                         int[][] altBoard = copyBoard(board);
-                        if (moveDirection(altBoard, altDir)) {
+                        if (move(altBoard, altDir)) {
                             Point altMaxPos = findMaxTilePosition(altBoard);
                             if (isCorner(altMaxPos)) {
                                 alternativeExists = true;
@@ -502,23 +375,13 @@ public class AI2048 extends Frame implements Runnable {
                 }
 
                 double score = expectimax(newBoard, depth - 1, false);
-
                 if (score > currentBestScore) {
                     currentBestScore = score;
                     currentBestDir = dir;
                 }
-
-                if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) {
-                    // Time limit reached, stop deeper search
-                    break;
-                }
+                if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) break;
             }
-
-            if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) {
-                // Stop iterative deepening on timeout
-                break;
-            }
-
+            if (System.currentTimeMillis() - startTime > TIME_LIMIT_MS) break;
             if (currentBestDir != -1) {
                 bestDir = currentBestDir;
                 bestScore = currentBestScore;
@@ -528,19 +391,16 @@ public class AI2048 extends Frame implements Runnable {
     }
 
     private int log2(int val) {
-        return val == 0 ? 0 : (int)(Math.log(val) / Math.log(2));
+        return val == 0 ? 0 : 31 - Integer.numberOfLeadingZeros(val);
     }
 
     private int[][] computeLogBoard(int[][] b) {
         int[][] logBoard = new int[SIZE][SIZE];
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < SIZE; i++)
+            for (int j = 0; j < SIZE; j++)
                 logBoard[i][j] = log2(b[i][j]);
-            }
-        }
         return logBoard;
     }
-
 
     private void performAIMove() {
         int dir = iterativeDeepeningBestMove();
@@ -548,27 +408,15 @@ public class AI2048 extends Frame implements Runnable {
             gameOver = true;
             return;
         }
-
-        boolean didMove = false;
-        switch (dir) {
-            case 0: didMove = moveUp(); break;
-            case 1: didMove = moveDown(); break;
-            case 2: didMove = moveLeft(); break;
-            case 3: didMove = moveRight(); break;
-        }
-
+        boolean didMove = move(board, dir);
         if (didMove) {
             addRandomTile();
-
             if (maxTile(board) >= 2048) {
                 gameWon = true;
-                return; // stop AI after winning
+                return;
             }
-
             repaint();
-            if (!canMove()) {
-                gameOver = true;
-            }
+            if (!canMove()) gameOver = true;
         } else {
             gameOver = true;
         }
@@ -580,40 +428,30 @@ public class AI2048 extends Frame implements Runnable {
             offscreenImage = createImage(getWidth(), getHeight());
             offscreenGraphics = offscreenImage.getGraphics();
         }
-
-        // Clear offscreen
         offscreenGraphics.setColor(new Color(0xbbada0));
         offscreenGraphics.fillRect(0, 0, getWidth(), getHeight());
 
-        int tileSize = 80;
-        int padding = 15;
-        Font font = new Font("Arial", Font.BOLD, 36);
-        offscreenGraphics.setFont(font);
-
-        for (int i = 0; i < SIZE; i++) {
+        offscreenGraphics.setFont(new Font("Arial", Font.BOLD, 36));
+        for (int i = 0; i < SIZE; i++)
             for (int j = 0; j < SIZE; j++) {
                 int value = board[i][j];
-                int x = padding + j * (tileSize + padding);
-                int y = padding + i * (tileSize + padding) + 30;
-                drawTile(offscreenGraphics, value, x, y, tileSize, tileSize);
+                int x = PADDING + j * (TILE_SIZE + PADDING);
+                int y = PADDING + i * (TILE_SIZE + PADDING) + 30;
+                drawTile(offscreenGraphics, value, x, y, TILE_SIZE, TILE_SIZE);
             }
-        }
 
         if (gameOver || gameWon) {
             offscreenGraphics.setColor(new Color(255, 255, 255, 180));
             offscreenGraphics.fillRect(0, 0, getWidth(), getHeight());
             offscreenGraphics.setColor(gameWon ? Color.GREEN : Color.RED);
             offscreenGraphics.setFont(new Font("Arial", Font.BOLD, 48));
-            offscreenGraphics.drawString(gameWon ? "You Win!" : "Game Over!", 100, getHeight() / 2);
+            offscreenGraphics.drawString(gameWon ? "AI Wins!" : "Game Over!", 100, getHeight() / 2);
         }
-
-        // Draw offscreen buffer to screen in one operation
         g.drawImage(offscreenImage, 0, 0, this);
     }
 
     private void drawTile(Graphics g, int value, int x, int y, int w, int h) {
-        Color bg;
-        Color fg;
+        Color bg, fg;
         switch (value) {
             case 0: bg = new Color(0xcdc1b4); fg = Color.BLACK; break;
             case 2: bg = new Color(0xeee4da); fg = new Color(0x776e65); break;
@@ -627,13 +465,11 @@ public class AI2048 extends Frame implements Runnable {
             case 512: bg = new Color(0xedc850); fg = Color.WHITE; break;
             case 1024: bg = new Color(0xedc53f); fg = Color.WHITE; break;
             case 2048: bg = new Color(0xedc22e); fg = Color.WHITE; break;
-            case 4096, 16384, 8192: bg = new Color(0x3c3a32); fg = Color.WHITE; break;
+            case 4096: case 8192: case 16384: bg = new Color(0x3c3a32); fg = Color.WHITE; break;
             default: bg = Color.BLACK; fg = Color.WHITE; break;
         }
-
         g.setColor(bg);
         g.fillRoundRect(x, y, w, h, 15, 15);
-
         if (value != 0) {
             g.setColor(fg);
             String s = String.valueOf(value);
@@ -657,23 +493,10 @@ public class AI2048 extends Frame implements Runnable {
         repaint();
     }
 
-
     @Override
     public void update(Graphics g) {
-        // Override update to avoid clearing screen before paint,
-        // which causes flicker
         paint(g);
     }
-
-    static {
-        Random rand = new Random();
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            for (int j = 0; j < MAX_LOG_TILE; j++) {
-                ZOBRIST_TABLE[i][j] = rand.nextLong();
-            }
-        }
-    }
-
 
     public static void main(String[] args) {
         new AI2048();

@@ -5,35 +5,12 @@ plugins {
 }
 
 group = 'mi.m4x.fusion'
-version = '1.1'
+version = '1.2'
 
 repositories {
     mavenCentral()
 }
 
-def gdxVersion = '1.12.1'
-def lwjglVersion = '3.3.3'
-
-// libGDX dependencies
-dependencies {
-    //implementation "com.badlogicgames.gdx:gdx:$gdxVersion"
-    //implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:$gdxVersion"
-    //runtimeOnly "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
-
-    // LWJGL core and OpenCL bindings
-    //implementation "org.lwjgl:lwjgl:$lwjglVersion"
-    //implementation "org.lwjgl:lwjgl-opencl:$lwjglVersion"
-    //implementation "org.lwjgl:lwjgl-glfw:$lwjglVersion"
-
-    // LWJGL native bindings (only for modules that have native jars)
-    //runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-windows"
-    // Remove this line below:
-    // runtimeOnly "org.lwjgl:lwjgl-opencl:$lwjglVersion:natives-windows"
-    //runtimeOnly "org.lwjgl:lwjgl-glfw:$lwjglVersion:natives-windows"
-}
-
-
 application {
-    //mainClass = 'mi.m4x.fusion.SphereLightingDemo'  // Note: no .java extension here
     mainClass = 'mi.m4x.fusion.AI2048'
 }
